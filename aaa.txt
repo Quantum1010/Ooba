@@ -1,0 +1,1259 @@
+socket --- 低水準ネットワークインターフェース
+ソースコード: Lib/socket.py
+
+このモジュールはBSDの ソケット(socket) インターフェイスへのアクセスを提供します。これは、近代的なUnixシステム、Windows、MacOS、その他多くのプラットフォームで動作します。
+
+注釈 いくつかの挙動はプラットフォームに依存します。オペレーティングシステムのソケットAPIを呼び出しているためです。
+利用可能性: Emscripten でなく、WASI でもないこと。
+
+このモジュールは WebAssembly プラットフォーム wasm32-emscripten と wasm32-wasi では動作しないか、利用不可です。詳しくは、WebAssembly platforms を見てください。
+
+Pythonインターフェースは、Unixのソケット用システムコールとライブラリインターフェースを、そのままPythonのオブジェクト指向スタイルに変換したものです。各種ソケット関連のシステムコールは、 socket() 関数で生成される socket オブジェクト のメソッドとして実装されています。 メソッドの引数は C のインターフェイスよりも多少高水準で、例えばファイルに対する read() や write() メソッドと同様に、 受信時のバッファ確保は自動的に処理され、送信時のバッファ長は暗黙的に決まります。
+
+参考
+Module socketserver
+ネットワークサーバの開発を省力化するためのクラス群。
+
+Module ssl
+ソケットオブジェクトに対する TLS/SSL ラッパー.
+
+ソケットファミリー
+どのシステムで実行するかとビルドオプションに依存しますが、このモジュールによって多様なソケットファミリーをサポートします。
+
+特定のソケットオブジェクトによって必要とされるアドレスフォーマットは、ソケットオブジェクトが生成されたときに指定されたアドレスファミリーを元に自動的に選択されます。ソケットアドレスは次の通りです。
+
+ファイルシステム上のノードに束縛された AF_UNIX ソケットのアドレスは、ファイルシステムエンコーディングと 'surrogateescape' エラーハンドラ (PEP 383 を参照) を使って文字列として表現されます。 Linux の抽象名前空間のアドレスは、先頭が null バイトとなる bytes-like object として返されます。この名前空間のソケットは通常のファイルシステム上のソケットと通信できるので、 Linux 上で動作することを意図したプログラムは両方のアドレスを扱う必要がある可能性があります。文字列と bytes-like オブジェクトはどちらのタイプのアドレスにも引数として渡すことができます。
+
+バージョン 3.3 で変更: これまでは AF_UNIX ソケットパスは UTF-8 エンコーディングを使用するものとされていました。
+
+バージョン 3.5 で変更: 書き込み可能な bytes-like object を使用できるようになりました。
+
+AF_INET アドレスファミリーには、 (host, port) ペアがアドレスとして利用されます。 host はホスト名か 'daring.cwi.nl' のようなインターネットドメインか、 '100.50.200.5' のような IPv4 アドレスで、 port は整数です。
+
+For IPv4 addresses, two special forms are accepted instead of a host address: '' represents INADDR_ANY, which is used to bind to all interfaces, and the string '<broadcast>' represents INADDR_BROADCAST. This behavior is not compatible with IPv6, therefore, you may want to avoid these if you intend to support IPv6 with your Python programs.
+
+AF_INET6 アドレスファミリーでは、 (host, port, flowinfo, scope_id) の4 要素のタプルが利用されます。 flowinfo と scopeid はそれぞれC言語の struct sockaddr_in6 の sin6_flowinfo と sin6_scope_id メンバーを表します。 socket モジュールのメソッドでは、後方互換性のために flowinfo と scope_id の省略を許しています。しかし、 scope_id を省略すると scope された IPv6 アドレスを操作するときに問題が起こる場合があることに注意してください。
+
+バージョン 3.7 で変更: For multicast addresses (with scope_id meaningful) address may not contain %scope_id (or zone id) part. This information is superfluous and may be safely omitted (recommended).
+
+AF_NETLINK ソケットのアドレスは (pid, groups) のペアで表されます。
+
+Linux 限定で、 AF_TIPC アドレスファミリーを用いて TIPC がサポートされます。 TIPC は、クラスタコンピューティング環境のために設計された、IP ベースではないオープンなネットワークプロトコルです。アドレスはタプルで表現され、フィールドはアドレスタイプに依存します。一般的なタプルの形式は (addr_type, v1, v2, v3 [, scope]) で、それぞれは次の通りです:
+
+addr_type は TIPC_ADDR_NAMESEQ, TIPC_ADDR_NAME, TIPC_ADDR_ID の1つ。
+
+scope は TIPC_ZONE_SCOPE, TIPC_CLUSTER_SCOPE, TIPC_NODE_SCOPE の1つ。
+
+addr_type が TIPC_ADDR_NAME の場合、 v1 はサーバータイプ、 v2 はポートID (the port identifier)、そして v3 は 0 であるべきです。
+
+addr_type が TIPC_ADDR_NAMESEQ の場合、 v1 はサーバータイプ、 v2 はポート番号下位(lower port number)、 v3 はポート番号上位(upper port number) です。
+
+addr_type が TIPC_ADDR_ID の場合、 v1 はノード、 v2 は参照、 v3 は0であるべきです。
+
+AF_CAN アドレスファミリーには (interface, ) というタプルを利用します。 interface は 'can0' のようなネットワークインターフェース名を表す文字列です。このファミリーの全てのネットワークインターフェースからパケットを受信するために、ネットワークインターフェース名 '' を利用できます。
+
+CAN_ISOTP protocol require a tuple (interface, rx_addr, tx_addr) where both additional parameters are unsigned long integer that represent a CAN identifier (standard or extended).
+
+CAN_J1939 protocol require a tuple (interface, name, pgn, addr) where additional parameters are 64-bit unsigned integer representing the ECU name, a 32-bit unsigned integer representing the Parameter Group Number (PGN), and an 8-bit integer representing the address.
+
+文字列またはタプル (id, unit) は PF_SYSTEM ファミリーの SYSPROTO_CONTROL プロトコルのために使用されます。この文字列は、動的に割り当てられたIDによるカーネルコントロールの名前です。このタプルは、カーネルコントロールのIDとユニット番号が既知の場合、または登録済みIDが使用中の場合に使用することができます。
+
+バージョン 3.3 で追加.
+
+AF_BLUETOOTH は以下のプロトコルとアドレスフォーマットをサポートしています。
+
+BTPROTO_L2CAP は (bdaddr, psm) を受け取ります。 bdaddr は Bluetooth アドレスを表す文字列で、 psm は整数です。
+
+BTPROTO_RFCOMM は (bdaddr, channel) を受け取ります。 bdaddr は Bluetooth アドレスを表す文字列で、 channel は整数です。
+
+BTPROTO_HCI は (device_id,) を受け取ります。 device_id は、数値またはインターフェイスの Bluetooth アドレスを表す文字列です。(OS に依存します。NetBSD と DragonFlyBSD は Bluetooth アドレスを期待しますが、その他すべての OS は、数値を期待します。)
+
+バージョン 3.2 で変更: NetBSD と DragonFlyBSD のサポートが追加されました。
+
+BTPROTO_SCO は bdaddr を受け取ります。ここで、 bdaddr は Bluetooth アドレスを文字列形式で持つ bytes オブジェクトです (例: b'12:23:34:45:56:67')。このプロトコルは、 FreeBSD ではサポートされていません。
+
+AF_ALG はカーネル暗号へのソケットベースのインターフェイスで、Linux でのみ使用できます。アルゴリズムソケットは、2 つから 4 つの要素を持つタプル (type, name [, feat [, mask]]) で構成されます。各要素の意味は、以下の通りです。
+
+type はアルゴリズムタイプを示す文字列です。例: aead, hash, skcipher または rng。
+
+name はアルゴリズム名及び操作モードを示す文字列です。例: sha256, hmac(sha256), cbc(aes) または drbg_nopr_ctr_aes256。
+
+feat と mask は、符号を持たない 32 ビットの整数です。
+
+利用可能な環境: Linux 2.6.38以上。
+
+一部のアルゴリズムタイプでは、さらに新しいカーネルが必要です。
+
+バージョン 3.6 で追加.
+
+AF_VSOCK allows communication between virtual machines and their hosts. The sockets are represented as a (CID, port) tuple where the context ID or CID and port are integers.
+
+利用可能な環境: Linux 3.9以上。
+
+See vsock(7)
+
+バージョン 3.7 で追加.
+
+AF_PACKET is a low-level interface directly to network devices. The packets are represented by the tuple (ifname, proto[, pkttype[, hatype[, addr]]]) where:
+
+ifname - デバイス名を指定する文字列。
+
+proto - The Ethernet protocol number. May be ETH_P_ALL to capture all protocols, one of the ETHERTYPE_* constants or any other Ethernet protocol number. Value must be in network-byte-order.
+
+pkttype - パケットタイプを指定するオプションの整数:
+
+PACKET_HOST (the default) - Packet addressed to the local host.
+
+PACKET_BROADCAST - Physical-layer broadcast packet.
+
+PACKET_MULTICAST - Packet sent to a physical-layer multicast address.
+
+PACKET_OTHERHOST - Packet to some other host that has been caught by a device driver in promiscuous mode.
+
+PACKET_OUTGOING - Packet originating from the local host that is looped back to a packet socket.
+
+hatype - Optional integer specifying the ARP hardware address type.
+
+addr - Optional bytes-like object specifying the hardware physical address, whose interpretation depends on the device.
+
+利用可能な環境: Linux 2.2以上。
+
+AF_QIPCRTR is a Linux-only socket based interface for communicating with services running on co-processors in Qualcomm platforms. The address family is represented as a (node, port) tuple where the node and port are non-negative integers.
+
+利用可能な環境: Linux 4.7以上。
+
+バージョン 3.8 で追加.
+
+IPPROTO_UDPLITE is a variant of UDP which allows you to specify what portion of a packet is covered with the checksum. It adds two socket options that you can change. self.setsockopt(IPPROTO_UDPLITE, UDPLITE_SEND_CSCOV, length) will change what portion of outgoing packets are covered by the checksum and self.setsockopt(IPPROTO_UDPLITE, UDPLITE_RECV_CSCOV, length) will filter out packets which cover too little of their data. In both cases length should be in range(8, 2**16, 8).
+
+Such a socket should be constructed with socket(AF_INET, SOCK_DGRAM, IPPROTO_UDPLITE) for IPv4 or socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDPLITE) for IPv6.
+
+Availability: Linux >= 2.6.20, FreeBSD >= 10.1
+
+バージョン 3.9 で追加.
+
+AF_HYPERV is a Windows-only socket based interface for communicating with Hyper-V hosts and guests. The address family is represented as a (vm_id, service_id) tuple where the vm_id and service_id are UUID strings.
+
+The vm_id is the virtual machine identifier or a set of known VMID values if the target is not a specific virtual machine. Known VMID constants defined on socket are:
+
+HV_GUID_ZERO
+
+HV_GUID_BROADCAST
+
+HV_GUID_WILDCARD - Used to bind on itself and accept connections from all partitions.
+
+HV_GUID_CHILDREN - Used to bind on itself and accept connection from child partitions.
+
+HV_GUID_LOOPBACK - Used as a target to itself.
+
+HV_GUID_PARENT - When used as a bind accepts connection from the parent partition. When used as an address target it will connect to the parent partition.
+
+The service_id is the service identifier of the registered service.
+
+バージョン 3.12 で追加.
+
+IPv4/v6ソケットの host 部にホスト名を指定すると、処理結果が一定ではない場合があります。これはPythonはDNSから取得したアドレスのうち最初のアドレスを使用するので、 DNSの処理やホストの設定によって異なるIPv4/6アドレスを取得する場合があるためです。常に同じ結果が必要であれば、 host に数値のアドレスを指定してください。
+
+エラー時には例外が発生します。引数型のエラーやメモリ不足の場合には通常の例外が発生し、ソケットやアドレス関連のエラーの場合は OSError またはそのサブクラスが発生します。
+
+setblocking() メソッドで、非ブロッキングモードを使用することができます。また、より汎用的に settimeout() メソッドでタイムアウトを指定する事ができます。
+
+モジュールの内容
+socket モジュールは以下の要素を公開しています。
+
+例外
+exception socket.error
+OSError の非推奨のエイリアスです。
+
+バージョン 3.3 で変更: PEP 3151 に基づき、このクラスは OSError のエイリアスになりました。
+
+exception socket.herror
+OSError のサブクラス。この例外はアドレス関連のエラー、つまり gethostbyname_ex() と gethostbyaddr() などの、 POSIX C API の h_errno を利用する関数のために利用されます。例外に付随する (h_errno, string) ペアはライブラリの呼び出しによって返されたエラーを表します。 h_errno は数値で、 string は、 hstrerror() C関数によって返される h_errno を説明する文字列です。
+
+バージョン 3.3 で変更: このクラスは OSError のサブクラスになりました。
+
+exception socket.gaierror
+OSError のサブクラスです。この例外は getaddrinfo() と getnameinfo() でアドレス関連のエラーが発生した場合に送出されます。例外の値は (error, string) のペアで、ライブラリの呼び出し結果を返します。 string はC関数 gai_strerror() で取得した、 error の意味を示す文字列です。 error の値は、このモジュールで定義される EAI_* 定数のどれかとなります。
+
+バージョン 3.3 で変更: このクラスは OSError のサブクラスになりました。
+
+exception socket.timeout
+TimeoutError の非推奨のエイリアスです。
+
+OSError のサブクラスです。この例外は、あらかじめ settimeout() を呼び出して (あるいは setdefaulttimeout() を利用して暗黙に) タイムアウトを有効にしてあるソケットでタイムアウトが生じた際に送出されます。 例外に付属する値は文字列で、その内容は現状では常に "timed out" となります。
+
+バージョン 3.3 で変更: このクラスは OSError のサブクラスになりました。
+
+バージョン 3.10 で変更: This class was made an alias of TimeoutError.
+
+定数
+AF_* 定数と SOCK_* 定数は、 AddressFamily と SocketKind IntEnum collection になりました。
+
+バージョン 3.4 で追加.
+
+socket.AF_UNIX
+socket.AF_INET
+socket.AF_INET6
+アドレス (およびプロトコル) ファミリーを示す定数で、 socket() の 最初の引数に指定することができます。 AF_UNIX ファミリーをサポート しないプラットフォームでは、 AF_UNIX は未定義となります。システムによってはこれら以外の定数が定義されているかもしれません。
+
+socket.AF_UNSPEC
+AF_UNSPEC means that getaddrinfo() should return socket addresses for any address family (either IPv4, IPv6, or any other) that can be used.
+
+socket.SOCK_STREAM
+socket.SOCK_DGRAM
+socket.SOCK_RAW
+socket.SOCK_RDM
+socket.SOCK_SEQPACKET
+ソケットタイプを示す定数で、 socket() の2番目の引数に指定することができます。システムによってはこれら以外の定数が定義されているかもしれません。 (ほとんどの場合、 SOCK_STREAM と SOCK_DGRAM 以外は必要ありません。)
+
+socket.SOCK_CLOEXEC
+socket.SOCK_NONBLOCK
+この2つの定数が定義されていた場合、ソケットタイプと組み合わせていくつかの flags をアトミックに設定することができます (別の呼び出しを不要にして競合状態を避ける事ができます)。
+
+参考 より完全な説明は Secure File Descriptor Handling を参照してください。
+利用可能な環境: Linux 2.6.27以上。
+
+バージョン 3.2 で追加.
+
+SO_*
+socket.SOMAXCONN
+MSG_*
+SOL_*
+SCM_*
+IPPROTO_*
+IPPORT_*
+INADDR_*
+IP_*
+IPV6_*
+EAI_*
+AI_*
+NI_*
+TCP_*
+Unixのソケット・IPプロトコルのドキュメントで定義されている各種定数。ソケットオブジェクトの setsockopt() や getsockopt() で使用します。ほとんどのシンボルはUnixのヘッダファイルに従っています。一部のシンボルには、デフォルト値を定義してあります。
+
+バージョン 3.6 で変更: SO_DOMAIN, SO_PROTOCOL, SO_PEERSEC, SO_PASSSEC, TCP_USER_TIMEOUT, TCP_CONGESTION が追加されました。
+
+バージョン 3.6.5 で変更: Windowsでは、実行時のWindowsがサポートしているならば TCP_FASTOPEN、 TCP_KEEPCNT が表示されます。
+
+バージョン 3.7 で変更: TCP_NOTSENT_LOWAT が追加されました。
+
+Windowsでは、実行時のWindowsがサポートしているならば TCP_KEEPIDLE, TCP_KEEPINTVL が表示されます。
+
+バージョン 3.10 で変更: IP_RECVTOS was added. Added TCP_KEEPALIVE. On MacOS this constant can be used in the same way that TCP_KEEPIDLE is used on Linux.
+
+バージョン 3.11 で変更: Added TCP_CONNECTION_INFO. On MacOS this constant can be used in the same way that TCP_INFO is used on Linux and BSD.
+
+バージョン 3.12 で変更: Added SO_RTABLE and SO_USER_COOKIE. On OpenBSD and FreeBSD respectively those constants can be used in the same way that SO_MARK is used on Linux. Also added missing TCP socket options from Linux: TCP_MD5SIG, TCP_THIN_LINEAR_TIMEOUTS, TCP_THIN_DUPACK, TCP_REPAIR, TCP_REPAIR_QUEUE, TCP_QUEUE_SEQ, TCP_REPAIR_OPTIONS, TCP_TIMESTAMP, TCP_CC_INFO, TCP_SAVE_SYN, TCP_SAVED_SYN, TCP_REPAIR_WINDOW, TCP_FASTOPEN_CONNECT, TCP_ULP, TCP_MD5SIG_EXT, TCP_FASTOPEN_KEY, TCP_FASTOPEN_NO_COOKIE, TCP_ZEROCOPY_RECEIVE, TCP_INQ, TCP_TX_DELAY. Added IP_PKTINFO, IP_UNBLOCK_SOURCE, IP_BLOCK_SOURCE, IP_ADD_SOURCE_MEMBERSHIP, IP_DROP_SOURCE_MEMBERSHIP.
+
+socket.AF_CAN
+socket.PF_CAN
+SOL_CAN_*
+CAN_*
+Linux ドキュメントにあるこの形式の定数は socket モジュールでも定義されています。
+
+Availability: Linux >= 2.6.25, NetBSD >= 8.
+
+バージョン 3.3 で追加.
+
+バージョン 3.11 で変更: NetBSD サポートが追加されました。
+
+socket.CAN_BCM
+CAN_BCM_*
+CANプロトコルファミリーのCAN_BCMは、ブロードキャストマネージャー(BCM)プロトコルです。Linuxドキュメントにあるこの形式の定数は、socketモジュールでも定義されています。
+
+利用可能な環境: Linux 2.6.25以上。
+
+注釈 The CAN_BCM_CAN_FD_FRAME flag is only available on Linux >= 4.8.
+バージョン 3.4 で追加.
+
+socket.CAN_RAW_FD_FRAMES
+CAN_RAW ソケットで CAN FD をサポートします。これはデフォルトで無効になっています。これにより、アプリケーションが CAN フレームと CAN FD フレームを送信できるようになります。ただし、ソケットからの読み出し時に、CAN と CAN FD の両方のフレームを受け入れなければなりません。
+
+この定数は、 Linux のドキュメンテーションで説明されています。
+
+利用可能な環境: Linux 3.6以上。
+
+バージョン 3.5 で追加.
+
+socket.CAN_RAW_JOIN_FILTERS
+Joins the applied CAN filters such that only CAN frames that match all given CAN filters are passed to user space.
+
+この定数は、 Linux のドキュメンテーションで説明されています。
+
+利用可能な環境: Linux 4.1以上。
+
+バージョン 3.9 で追加.
+
+socket.CAN_ISOTP
+CAN_ISOTP, in the CAN protocol family, is the ISO-TP (ISO 15765-2) protocol. ISO-TP constants, documented in the Linux documentation.
+
+利用可能な環境: Linux 2.6.25以上。
+
+バージョン 3.7 で追加.
+
+socket.CAN_J1939
+CAN_J1939, in the CAN protocol family, is the SAE J1939 protocol. J1939 constants, documented in the Linux documentation.
+
+利用可能な環境: Linux 5.4以上。
+
+バージョン 3.9 で追加.
+
+socket.AF_DIVERT
+socket.PF_DIVERT
+These two constants, documented in the FreeBSD divert(4) manual page, are also defined in the socket module.
+
+Availability: FreeBSD >= 14.0.
+
+バージョン 3.12 で追加.
+
+socket.AF_PACKET
+socket.PF_PACKET
+PACKET_*
+Linux ドキュメントにあるこの形式の定数は socket モジュールでも定義されています。
+
+利用可能な環境: Linux 2.2以上。
+
+socket.ETH_P_ALL
+ETH_P_ALL can be used in the socket constructor as proto for the AF_PACKET family in order to capture every packet, regardless of protocol.
+
+For more information, see the packet(7) manpage.
+
+利用可能な環境: Linux。
+
+バージョン 3.12 で追加.
+
+socket.AF_RDS
+socket.PF_RDS
+socket.SOL_RDS
+RDS_*
+Linux ドキュメントにあるこの形式の定数は socket モジュールでも定義されています。
+
+利用可能な環境: Linux 2.6.30以上。
+
+バージョン 3.3 で追加.
+
+socket.SIO_RCVALL
+socket.SIO_KEEPALIVE_VALS
+socket.SIO_LOOPBACK_FAST_PATH
+RCVALL_*
+Windows の WSAIoctl() のための定数です。この定数はソケットオブジェクトの ioctl() メソッドに引数として渡されます。
+
+バージョン 3.6 で変更: SIO_LOOPBACK_FAST_PATH が追加されました。
+
+TIPC_*
+TIPC 関連の定数で、C のソケットAPIが公開しているものにマッチします。詳しい情報は TIPC のドキュメントを参照してください。
+
+socket.AF_ALG
+socket.SOL_ALG
+ALG_*
+Linux カーネル暗号用の定数です。
+
+利用可能な環境: Linux 2.6.38以上。
+
+バージョン 3.6 で追加.
+
+socket.AF_VSOCK
+socket.IOCTL_VM_SOCKETS_GET_LOCAL_CID
+VMADDR*
+SO_VM*
+Constants for Linux host/guest communication.
+
+利用可能な環境: Linux 4.8以上。
+
+バージョン 3.7 で追加.
+
+socket.AF_LINK
+利用可能な環境: BSD, macOS。
+
+バージョン 3.4 で追加.
+
+socket.has_ipv6
+現在のプラットフォームでIPv6がサポートされているか否かを示す真偽値。
+
+socket.BDADDR_ANY
+socket.BDADDR_LOCAL
+これらは、特別な意味を持つ Bluetooth アドレスを含む文字列定数です。例えば、BDADDR_ANY を使用すると、 BTPROTO_RFCOMM で束縛ソケットを指定する際に、任意のアドレスを指し示すことができます。
+
+socket.HCI_FILTER
+socket.HCI_TIME_STAMP
+socket.HCI_DATA_DIR
+BTPROTO_HCI で使用します。 HCI_FILTER は NetBSD または DragonFlyBSD では使用できません。 HCI_TIME_STAMP と HCI_DATA_DIR は FreeBSD, NetBSD, DragonFlyBSD では使用できません。
+
+socket.AF_QIPCRTR
+Constant for Qualcomm's IPC router protocol, used to communicate with service providing remote processors.
+
+利用可能な環境: Linux 4.7以上。
+
+socket.SCM_CREDS2
+socket.LOCAL_CREDS
+socket.LOCAL_CREDS_PERSISTENT
+LOCAL_CREDS and LOCAL_CREDS_PERSISTENT can be used with SOCK_DGRAM, SOCK_STREAM sockets, equivalent to Linux/DragonFlyBSD SO_PASSCRED, while LOCAL_CREDS sends the credentials at first read, LOCAL_CREDS_PERSISTENT sends for each read, SCM_CREDS2 must be then used for the latter for the message type.
+
+バージョン 3.11 で追加.
+
+利用可能な環境: FreeBSD。
+
+socket.SO_INCOMING_CPU
+Constant to optimize CPU locality, to be used in conjunction with SO_REUSEPORT.
+
+バージョン 3.11 で追加.
+
+利用可能な環境: Linux 3.9以上。
+
+socket.AF_HYPERV
+socket.HV_PROTOCOL_RAW
+socket.HVSOCKET_CONNECT_TIMEOUT
+socket.HVSOCKET_CONNECT_TIMEOUT_MAX
+socket.HVSOCKET_CONNECTED_SUSPEND
+socket.HVSOCKET_ADDRESS_FLAG_PASSTHRU
+socket.HV_GUID_ZERO
+socket.HV_GUID_WILDCARD
+socket.HV_GUID_BROADCAST
+socket.HV_GUID_CHILDREN
+socket.HV_GUID_LOOPBACK
+socket.HV_GUID_PARENT
+Constants for Windows Hyper-V sockets for host/guest communications.
+
+利用可能な環境: Windows 。
+
+バージョン 3.12 で追加.
+
+socket.ETHERTYPE_ARP
+socket.ETHERTYPE_IP
+socket.ETHERTYPE_IPV6
+socket.ETHERTYPE_VLAN
+IEEE 802.3 protocol number. constants.
+
+Availability: Linux, FreeBSD, macOS.
+
+バージョン 3.12 で追加.
+
+関数
+ソケットの作成
+以下の関数は全て socket object を生成します。
+
+class socket.socket(family=AF_INET, type=SOCK_STREAM, proto=0, fileno=None)
+アドレスファミリー、ソケットタイプ、プロトコル番号を指定してソケットを作成します。アドレスファミリーには AF_INET (デフォルト値), AF_INET6, AF_UNIX, AF_CAN, AF_PACKET, AF_RDS を指定することができます。ソケットタイプには SOCK_STREAM (デフォルト値), SOCK_DGRAM, SOCK_RAW または他の SOCK_ 定数の何れかを指定します。プロトコル番号は通常省略するか、または0を指定しますが、アドレスファミリーに AF_CAN を指定した場合は、プロトコル番号には const:CAN_RAW, CAN_BCM, CAN_ISOTP, CAN_J1939 のいずれかを指定すべきです。
+
+If fileno is specified, the values for family, type, and proto are auto-detected from the specified file descriptor. Auto-detection can be overruled by calling the function with explicit family, type, or proto arguments. This only affects how Python represents e.g. the return value of socket.getpeername() but not the actual OS resource. Unlike socket.fromfd(), fileno will return the same socket and not a duplicate. This may help close a detached socket using socket.close().
+
+新たに作成されたソケットは 継承不可 です。
+
+引数 self, family, type, protocol 付きで 監査イベント socket.__new__ を送出します。
+
+バージョン 3.3 で変更: AF_CAN, AF_RDS ファミリーが追加されました。
+
+バージョン 3.4 で変更: CAN_BCMプロトコルが追加されました。
+
+バージョン 3.4 で変更: 返されるソケットは継承不可になりました。
+
+バージョン 3.7 で変更: CAN_ISOTP プロトコルが追加されました。
+
+バージョン 3.7 で変更: When SOCK_NONBLOCK or SOCK_CLOEXEC bit flags are applied to type they are cleared, and socket.type will not reflect them. They are still passed to the underlying system socket() call. Therefore,
+
+sock = socket.socket(
+    socket.AF_INET,
+    socket.SOCK_STREAM | socket.SOCK_NONBLOCK)
+will still create a non-blocking socket on OSes that support SOCK_NONBLOCK, but sock.type will be set to socket.SOCK_STREAM.
+
+バージョン 3.9 で変更: CAN_J1939 プロトコルが追加されました。
+
+バージョン 3.10 で変更: IPPROTO_MPTCP プロトコルが追加されました。
+
+socket.socketpair([family[, type[, proto]]])
+指定されたアドレスファミリー、ソケットタイプ、プロトコル番号から、接続されたソケットオブジェクトのペアを作成します。アドレスファミリー、ソケットタイプ、プロトコル番号は socket() 関数と同様に指定します。デフォルトのアドレスファミリは、プラットフォームで定義されている場合 AF_UNIX 、そうでなければ AF_INET が使われます。
+
+新たに作成されたソケットは 継承不可 です。
+
+バージョン 3.2 で変更: 返されるソケットオブジェクトが、サブセットではなく完全なソケットAPIを提供するようになりました。
+
+バージョン 3.4 で変更: 返されるソケットの組は、どちらも継承不可になりました。
+
+バージョン 3.5 で変更: Windows のサポートが追加されました。
+
+socket.create_connection(address, timeout=GLOBAL_DEFAULT, source_address=None, *, all_errors=False)
+インターネット address ((host, port) ペア) で listen しているTCPサービスに接続し、ソケットオブジェクトを返します。これは socket.connect() を高級にした関数です。 host が数値でないホスト名の場合、 AF_INET と AF_INET6 の両方で名前解決を試み、得られた全てのアドレスに対して成功するまで接続を試みます。この関数を使って IPv4 と IPv6 に両対応したクライアントを簡単に書くことができます。
+
+オプションの timeout 引数を指定すると、接続を試みる前にソケットオブジェクトのタイムアウトを設定します。 timeout が指定されない場合、 getdefaulttimeout() が返すデフォルトのタイムアウト設定値を利用します。
+
+source_address は接続する前にバインドするソースアドレスを指定するオプション引数で、指定する場合は (host, port) の2要素タプルでなければなりません。 host や port が '' か 0 だった場合は、OSのデフォルトの動作になります。
+
+When a connection cannot be created, an exception is raised. By default, it is the exception from the last address in the list. If all_errors is True, it is an ExceptionGroup containing the errors of all attempts.
+
+バージョン 3.2 で変更: source_address が追加されました。
+
+バージョン 3.11 で変更: all_errors が追加されました
+
+socket.create_server(address, *, family=AF_INET, backlog=None, reuse_port=False, dualstack_ipv6=False)
+Convenience function which creates a TCP socket bound to address (a 2-tuple (host, port)) and returns the socket object.
+
+family should be either AF_INET or AF_INET6. backlog is the queue size passed to socket.listen(); if not specified , a default reasonable value is chosen. reuse_port dictates whether to set the SO_REUSEPORT socket option.
+
+If dualstack_ipv6 is true and the platform supports it the socket will be able to accept both IPv4 and IPv6 connections, else it will raise ValueError. Most POSIX platforms and Windows are supposed to support this functionality. When this functionality is enabled the address returned by socket.getpeername() when an IPv4 connection occurs will be an IPv6 address represented as an IPv4-mapped IPv6 address. If dualstack_ipv6 is false it will explicitly disable this functionality on platforms that enable it by default (e.g. Linux). This parameter can be used in conjunction with has_dualstack_ipv6():
+
+import socket
+
+addr = ("", 8080)  # all interfaces, port 8080
+if socket.has_dualstack_ipv6():
+    s = socket.create_server(addr, family=socket.AF_INET6, dualstack_ipv6=True)
+else:
+    s = socket.create_server(addr)
+注釈 On POSIX platforms the SO_REUSEADDR socket option is set in order to immediately reuse previous sockets which were bound on the same address and remained in TIME_WAIT state.
+バージョン 3.8 で追加.
+
+socket.has_dualstack_ipv6()
+Return True if the platform supports creating a TCP socket which can handle both IPv4 and IPv6 connections.
+
+バージョン 3.8 で追加.
+
+socket.fromfd(fd, family, type, proto=0)
+Duplicate the file descriptor fd (an integer as returned by a file object's fileno() method) and build a socket object from the result. Address family, socket type and protocol number are as for the socket() function above. The file descriptor should refer to a socket, but this is not checked --- subsequent operations on the object may fail if the file descriptor is invalid. This function is rarely needed, but can be used to get or set socket options on a socket passed to a program as standard input or output (such as a server started by the Unix inet daemon). The socket is assumed to be in blocking mode.
+
+新たに作成されたソケットは 継承不可 です。
+
+バージョン 3.4 で変更: 返されるソケットは継承不可になりました。
+
+socket.fromshare(data)
+socket.share() メソッドから取得した data からソケットオブジェクトを生成します。ソケットはブロッキングモードだと仮定されます。
+
+利用可能な環境: Windows 。
+
+バージョン 3.3 で追加.
+
+socket.SocketType
+ソケットオブジェクトの型を示す型オブジェクト。 type(socket(...)) と同じです。
+
+その他の関数
+socket モジュールはネットワーク関連のサービスを提供しています:
+
+socket.close(fd)
+Close a socket file descriptor. This is like os.close(), but for sockets. On some platforms (most noticeable Windows) os.close() does not work for socket file descriptors.
+
+バージョン 3.7 で追加.
+
+socket.getaddrinfo(host, port, family=0, type=0, proto=0, flags=0)
+host / port 引数の指すアドレス情報を、そのサービスに接続されたソケットを作成するために必要な全ての引数が入った 5 要素のタプルに変換します。 host はドメイン名、IPv4/v6アドレスの文字列、または None です。 port は 'http' のようなサービス名文字列、ポート番号を表す数値、または None です。 host と port に None を指定すると C APIに NULL を渡せます。
+
+オプションの family, type, proto 引数を指定すると、返されるアドレスのリストを絞り込むことができます。これらの引数の値として 0 を渡すと絞り込まない結果を返します。 flags 引数には AI_* 定数のうち 1 つ以上が指定でき、結果の取り方を変えることができます。例えば、 AI_NUMERICHOST を指定するとドメイン名解決を行わないようにし、 host がドメイン名だった場合には例外を送出します。
+
+この関数は以下の構造をとる 5 要素のタプルのリストを返します:
+
+(family, type, proto, canonname, sockaddr)
+
+このタプルにある family, type, proto は、 socket() 関数を呼び出す際に指定する値と同じ整数です。 AI_CANONNAME を含んだ flags を指定した場合、 canonname は host の canonical name を示す文字列です。そうでない場合は canonname は空文字列です。 sockaddr は、ソケットアドレスを family に依存した形式で表すタプルで、 (AF_INET の場合は 2 要素のタプル (address, port) 、 AF_INET6 の場合は 4 要素のタプル (address, port, flowinfo, scope_id)) socket.connect() メソッドに渡すためのものです。
+
+引数 host, port, family, type, protocol 付きで 監査イベント socket.getaddrinfo を送出します。
+
+次の例では example.org の 80 番ポートポートへの TCP 接続を得るためのアドレス情報を取得しようとしています。 (結果は IPv6 をサポートしているかどうかで変わります):
+
+>>>
+socket.getaddrinfo("example.org", 80, proto=socket.IPPROTO_TCP)
+[(socket.AF_INET6, socket.SOCK_STREAM,
+ 6, '', ('2606:2800:220:1:248:1893:25c8:1946', 80, 0, 0)),
+ (socket.AF_INET, socket.SOCK_STREAM,
+ 6, '', ('93.184.216.34', 80))]
+バージョン 3.2 で変更: パラメータをキーワード引数で渡すことができるようになりました。
+
+バージョン 3.7 で変更: for IPv6 multicast addresses, string representing an address will not contain %scope_id part.
+
+socket.getfqdn([name])
+Return a fully qualified domain name for name. If name is omitted or empty, it is interpreted as the local host. To find the fully qualified name, the hostname returned by gethostbyaddr() is checked, followed by aliases for the host, if available. The first name which includes a period is selected. In case no fully qualified domain name is available and name was provided, it is returned unchanged. If name was empty or equal to '0.0.0.0', the hostname from gethostname() is returned.
+
+socket.gethostbyname(hostname)
+ホスト名を '100.50.200.5' のようなIPv4形式のアドレスに変換します。ホスト名としてIPv4アドレスを指定した場合、その値は変換せずにそのまま返ります。 gethostbyname() APIへのより完全なインターフェイスが必要であれば、 gethostbyname_ex() を参照してください。 gethostbyname() は、IPv6名前解決をサポートしていません。IPv4/ v6のデュアルスタックをサポートする場合は getaddrinfo() を使用します。
+
+引数 hostname を指定して 監査イベント socket.gethostbyname を送出します。
+
+Availability: not WASI.
+
+socket.gethostbyname_ex(hostname)
+Translate a host name to IPv4 address format, extended interface. Return a 3-tuple (hostname, aliaslist, ipaddrlist) where hostname is the host's primary host name, aliaslist is a (possibly empty) list of alternative host names for the same address, and ipaddrlist is a list of IPv4 addresses for the same interface on the same host (often but not always a single address). gethostbyname_ex() does not support IPv6 name resolution, and getaddrinfo() should be used instead for IPv4/v6 dual stack support.
+
+引数 hostname を指定して 監査イベント socket.gethostbyname を送出します。
+
+Availability: not WASI.
+
+socket.gethostname()
+Pythonインタープリタを現在実行しているマシンのホスト名を含む文字列を返します。
+
+引数無しで 監査イベント socket.gethostname を送出します。
+
+注意: gethostname() は完全修飾ドメイン名を返すとは限りません。完全修飾ドメイン名が必要であれば、getfqdn() を使用してください。
+
+Availability: not WASI.
+
+socket.gethostbyaddr(ip_address)
+Return a 3-tuple (hostname, aliaslist, ipaddrlist) where hostname is the primary host name responding to the given ip_address, aliaslist is a (possibly empty) list of alternative host names for the same address, and ipaddrlist is a list of IPv4/v6 addresses for the same interface on the same host (most likely containing only a single address). To find the fully qualified domain name, use the function getfqdn(). gethostbyaddr() supports both IPv4 and IPv6.
+
+引数 ip_address を指定して 監査イベント socket.gethostbyaddr を送出します。
+
+Availability: not WASI.
+
+socket.getnameinfo(sockaddr, flags)
+Translate a socket address sockaddr into a 2-tuple (host, port). Depending on the settings of flags, the result can contain a fully qualified domain name or numeric address representation in host. Similarly, port can contain a string port name or a numeric port number.
+
+For IPv6 addresses, %scope_id is appended to the host part if sockaddr contains meaningful scope_id. Usually this happens for multicast addresses.
+
+For more information about flags you can consult getnameinfo(3).
+
+引数 sockaddr を指定して 監査イベント socket.getnameinfo を送出します。
+
+Availability: not WASI.
+
+socket.getprotobyname(protocolname)
+('icmp' のような) インターネットプロトコル名を、 socket() の 第三引数として指定する事ができる定数に変換します。これは主にソケットを "raw" モード(SOCK_RAW)でオープンする場合には必要ですが、通常の ソケットモードでは第三引数に0を指定するか省略すれば正しいプロトコルが自動的に選択されます。
+
+Availability: not WASI.
+
+socket.getservbyname(servicename[, protocolname])
+インターネットサービス名とプロトコルから、そのサービスのポート番号を取得します。省略可能なプロトコル名として、 'tcp' か 'udp' のどちらかを指定することができます。指定がなければどちらのプロトコルにもマッチします。
+
+引数 servicename, protocolname を指定して 監査イベント socket.getservbyname を送出します。
+
+Availability: not WASI.
+
+socket.getservbyport(port[, protocolname])
+インターネットポート番号とプロトコル名から、サービス名を取得します。省略可能なプロトコル名として、 'tcp' か 'udp' のどちらかを指定することができます。指定がなければどちらのプロトコルにもマッチします。
+
+引数 port, protocolname を指定して 監査イベント socket.getservbyport を送出します。
+
+Availability: not WASI.
+
+socket.ntohl(x)
+32ビットの正の整数のバイトオーダを、ネットワークバイトオーダからホストバイトオーダに変換します。ホストバイトオーダとネットワークバイトオーダが一致するマシンでは、この関数は何もしません。それ以外の場合は4バイトのスワップを行います。
+
+socket.ntohs(x)
+16ビットの正の整数のバイトオーダを、ネットワークバイトオーダからホストバイトオーダに変換します。ホストバイトオーダとネットワークバイトオーダが一致するマシンでは、この関数は何もしません。それ以外の場合は2バイトのスワップを行います。
+
+バージョン 3.10 で変更: Raises OverflowError if x does not fit in a 16-bit unsigned integer.
+
+socket.htonl(x)
+32ビットの正の整数のバイトオーダを、ホストバイトオーダからネットワークバイトオーダに変換します。ホストバイトオーダとネットワークバイトオーダが一致するマシンでは、この関数は何もしません。それ以外の場合は4バイトのスワップを行います。
+
+socket.htons(x)
+16ビットの正の整数のバイトオーダを、ホストバイトオーダからネットワークバイトオーダに変換します。ホストバイトオーダとネットワークバイトオーダが一致するマシンでは、この関数は何もしません。それ以外の場合は2バイトのスワップを行います。
+
+バージョン 3.10 で変更: Raises OverflowError if x does not fit in a 16-bit unsigned integer.
+
+socket.inet_aton(ip_string)
+ドット記法によるIPv4アドレス('123.45.67.89' など)を32ビットにパックしたバイナリ形式に変換し、長さ4のバイト列オブジェクトとして返します。この関数が返す値は、標準Cライブラリの in_addr 型を使用する関数に渡す事ができます。
+
+inet_aton() はドットが 3 個以下の文字列も受け取ります; 詳細については Unix のマニュアル inet(3) を参照してください。
+
+IPv4アドレス文字列が不正であれば、 OSError が発生します。このチェックは、この関数で使用しているCの実装 inet_aton() で行われます。
+
+inet_aton() は、IPv6をサポートしません。IPv4/v6のデュアルスタックをサポートする場合は inet_pton() を使用します。
+
+socket.inet_ntoa(packed_ip)
+32 ビットにパックされた IPv4 アドレス (長さ 4 バイトの bytes-like object) を、標準的なドット記法による 4 桁の文字列 ('123.45.67.89' など) に変換します。この関数は、struct in_addr 型を使用する標準 C ライブラリのプログラムとやりとりする場合に便利です。in_addr 型は、この関数が引数として受け取る 32 ビットにパックされたバイナリデータに対する C の型です。
+
+この関数に渡すバイトシーケンスの長さが4バイト以外であれば、 OSError が発生します。 inet_ntoa() は、IPv6をサポートしません。IPv4/v6のデュアルスタックをサポートする場合は inet_ntop() を使用します。
+
+バージョン 3.5 で変更: 書き込み可能な bytes-like object を使用できるようになりました。
+
+socket.inet_pton(address_family, ip_string)
+IPアドレスを、アドレスファミリ固有の文字列からパックしたバイナリ形式に変換します。 inet_pton() は、 in_addr 型 (inet_aton() と同様)や in6_addr を使用するライブラリやネットワークプロトコルを呼び出す際に使用することができます。
+
+現在サポートされている address_family は、 AF_INET と AF_INET6 です。 ip_string に不正なIPアドレス文字列を指定すると、 OSError が発生します。有効な ip_string は、 address_family と inet_pton() の実装によって異なります。
+
+Availability: Unix, Windows。
+
+バージョン 3.4 で変更: Windowsで利用可能になりました
+
+socket.inet_ntop(address_family, packed_ip)
+パックしたIPアドレス (数バイトからなる bytes-like オブジェクト ) を、 '7.10.0.5' や '5aef:2b::8' などの標準的な、アドレスファミリ固有の文字列形式に変換します。 inet_ntop() は (inet_ntoa() と同様に)、 in_addr 型や in6_addr 型のオブジェクトを返すライブラリやネットワークプロトコル等で使用することができます。
+
+現在サポートされている address_family の値は、 AF_INET と AF_INET6 です。バイトオブジェクトの packed_ip の長さが、指定したアドレスファミリで適切な長さでない場合、 ValueError が発生します。 inet_ntop() の呼び出しでエラーが起こると、 OSError が発生します。
+
+Availability: Unix, Windows。
+
+バージョン 3.4 で変更: Windowsで利用可能になりました
+
+バージョン 3.5 で変更: 書き込み可能な bytes-like object を使用できるようになりました。
+
+socket.CMSG_LEN(length)
+指定された length にある制御メッセージ（CMSG）から、末尾のパディングを除いた全体の長さを返します。この値は多くの場合、 recvmsg() が制御メッセージの一連の要素を受信するためのバッファサイズとして使用できますが、バッファの末尾が要素である場合であってもパディングは含まれるので、バッファサイズを取得するには RFC 3542 で求められているように、 CMSG_SPACE() を使用した移植可能なアプリケーションが必要です。通常 length は定数であり、許容範囲外の値が指定された場合は OverflowError 例外が送出されます。
+
+Availability: Unix, not Emscripten, not WASI.
+
+Unix プラットフォーム。
+
+バージョン 3.3 で追加.
+
+socket.CMSG_SPACE(length)
+指定された length の制御メッセージ（CMSG）の要素を recvmsg() が受信するために必要な、パディングを含めたバッファサイズを返します。複数の項目を受信するために必要なバッファスペースは、 CMSG_SPACE() が返すそれぞれの要素の長さの合計です。通常 length は定数であり、許容範囲外の値が指定された場合は OverflowError 例外が送出されます。
+
+一部のシステムではこの関数を提供せずに制御メッセージをサポートする可能性があることに注意してください。また、この関数の返り値を使用して設定するバッファサイズは、受信する制御メッセージの量を正確に規定しないことがあり、その後に受信するデータがパディング領域に合う場合があることに注意してください。
+
+Availability: Unix, not Emscripten, not WASI.
+
+most Unix platforms.
+
+バージョン 3.3 で追加.
+
+socket.getdefaulttimeout()
+新規に生成されたソケットオブジェクトの、デフォルトのタイムアウト値を浮動小数点形式の秒数で返します。タイムアウトを使用しない場合には None を返します。最初に socket モジュールがインポートされた時の初期値は None です。
+
+socket.setdefaulttimeout(timeout)
+新規に生成されるソケットオブジェクトの、デフォルトのタイムアウト値を秒数 (float 型) で設定します。最初に socket モジュールがインポートされた時の初期値は None です。指定可能な値とその意味については settimeout() メソッドを参照してください。
+
+socket.sethostname(name)
+マシンのホスト名を name に設定します。必要な権限がない場合は OSError を送出します。
+
+引数 name を指定して 監査イベント socket.sethostname を送出します。
+
+利用可能な環境: Unix。
+
+バージョン 3.3 で追加.
+
+socket.if_nameindex()
+ネットワークインターフェース情報 (index int, name string)のタプルを返します。システムコールが失敗した場合、 OSError 例外を送出します。
+
+Availability: Unix, Windows, not Emscripten, not WASI.
+
+バージョン 3.3 で追加.
+
+バージョン 3.8 で変更: Windows のサポートが追加されました。
+
+注釈 On Windows network interfaces have different names in different contexts (all names are examples):
+UUID: {FB605B73-AAC2-49A6-9A2F-25416AEA0573}
+
+name: ethernet_32770
+
+friendly name: vEthernet (nat)
+
+description: Hyper-V Virtual Ethernet Adapter
+
+This function returns names of the second form from the list, ethernet_32770 in this example case.
+
+socket.if_nametoindex(if_name)
+インターフェース名 if_name に対応するネットワークインターフェースのインデックス番号を返します。対応するインターフェースが存在しない場合は OSError 例外を送出します。
+
+Availability: Unix, Windows, not Emscripten, not WASI.
+
+バージョン 3.3 で追加.
+
+バージョン 3.8 で変更: Windows のサポートが追加されました。
+
+参考 "Interface name" is a name as documented in if_nameindex().
+socket.if_indextoname(if_index)
+インターフェースインデックス番号 if_index に対応するネットワークインターフェース名を返します。対応するインターフェースが存在しない場合は OSError 例外を送出します。
+
+Availability: Unix, Windows, not Emscripten, not WASI.
+
+バージョン 3.3 で追加.
+
+バージョン 3.8 で変更: Windows のサポートが追加されました。
+
+参考 "Interface name" is a name as documented in if_nameindex().
+socket.send_fds(sock, buffers, fds[, flags[, address]])
+Send the list of file descriptors fds over an AF_UNIX socket sock. The fds parameter is a sequence of file descriptors. Consult sendmsg() for the documentation of these parameters.
+
+Availability: Unix, Windows, not Emscripten, not WASI.
+
+Unix platforms supporting sendmsg() and SCM_RIGHTS mechanism.
+
+バージョン 3.9 で追加.
+
+socket.recv_fds(sock, bufsize, maxfds[, flags])
+Receive up to maxfds file descriptors from an AF_UNIX socket sock. Return (msg, list(fds), flags, addr). Consult recvmsg() for the documentation of these parameters.
+
+Availability: Unix, Windows, not Emscripten, not WASI.
+
+Unix platforms supporting sendmsg() and SCM_RIGHTS mechanism.
+
+バージョン 3.9 で追加.
+
+注釈 Any truncated integers at the end of the list of file descriptors.
+socket オブジェクト
+ソケットオブジェクトは以下のメソッドを持ちます。 makefile() 以外のメソッドは、Unixのソケット用システムコールに対応しています。
+
+バージョン 3.2 で変更: context manager プロトコルのサポートが追加されました。コンテキストマネージャを終了することは、 close() を呼ぶことと同一です。
+
+socket.accept()
+接続を受け付けます。ソケットはアドレスにbind済みで、listen中である必要があります。戻り値は (conn, address) のペアで、 conn は接続を通じてデータの送受信を行うための 新しい ソケットオブジェクト、 address は接続先でソケットにbindしているアドレスを示します。
+
+新たに作成されたソケットは 継承不可 です。
+
+バージョン 3.4 で変更: ソケットが 継承不可 になりました。
+
+バージョン 3.5 で変更: システムコールが中断されシグナルハンドラが例外を送出しなかった場合、このメソッドは InterruptedError 例外を送出する代わりにシステムコールを再試行するようになりました (論拠については PEP 475 を参照してください)。
+
+socket.bind(address)
+ソケットを address にbindします。bind済みのソケットを再バインドする事はできません。(address のフォーマットはアドレスファミリによって異なります -- 前述。)
+
+引数 self, address を指定して 監査イベント socket.bind を送出します。
+
+Availability: not WASI.
+
+socket.close()
+ソケットを閉じられたものとしてマークします。 makefile() が返したファイルオブジェクトを閉じる時、対応する下層のシステムリソース（例：ファイル記述子）もすべて閉じます。一度この操作をすると、その後、このソケットオブジェクトに対するすべての操作が失敗します。キューに溜まったデータがフラッシュされた後は、リモート側の端点ではそれ以上のデータを受信しません。
+
+ソケットはガベージコレクション時に自動的にクローズされます。しかし、明示的に close() するか、 with 文の中でソケットを使うことを推奨します。
+
+バージョン 3.6 で変更: 下層の close() が呼び出される時、OSError が送出されるようになりました。
+
+注釈 close() は接続に関連付けられたリソースを解放しますが、接続をすぐに切断するとは限りません。接続を即座に切断したい場合は、 close() の前に shutdown() を呼び出してください。
+socket.connect(address)
+address で示されるリモートソケットに接続します。(address のフォーマットはアドレスファミリによって異なります --- 前述。)
+
+接続が信号によって中断された場合、このメソッドは接続が完了するまで待機するか、タイムアウト時に TimeoutError を送出します。タイムアウトは、信号ハンドラが例外を送出せず、ソケットがブロックするかタイムアウトが設定されている場合に起こります。非ブロックソケットでは、接続が信号によって中断された場合 (あるいは信号ハンドラにより例外が送出された場合)、このメソッドは InterruptedError 例外を送出します。
+
+引数 self, address を指定して 監査イベント socket.connect を送出します。
+
+バージョン 3.5 で変更: このメソッドは、接続が信号によって中断され、信号ハンドラが例外を送出せず、ソケットがブロックであるかタイムアウトが設定されている場合、InterruptedError 例外を送出する代わりに、接続を完了するまで待機するようになりました (論拠については PEP 475 を参照してください)。
+
+Availability: not WASI.
+
+socket.connect_ex(address)
+connect(address) と同様ですが、C言語の connect() 関数の呼び出しでエラーが発生した場合には例外を送出せずにエラーを戻り値として返します。(これ以外の、"host not found,"等のエラーの場合には例外が発生します。)処理が正常に終了した場合には 0 を返し、エラー時には errno の値を返します。この関数は、非同期接続をサポートする場合などに使用することができます。
+
+引数 self, address を指定して 監査イベント socket.connect を送出します。
+
+Availability: not WASI.
+
+socket.detach()
+実際にファイル記述子を閉じることなく、ソケットオブジェクトを閉じた状態にします。ファイル記述子は返却され、他の目的に再利用することができます。
+
+バージョン 3.2 で追加.
+
+socket.dup()
+ソケットを複製します。
+
+新たに作成されたソケットは 継承不可 です。
+
+バージョン 3.4 で変更: ソケットが 継承不可 になりました。
+
+Availability: not WASI.
+
+socket.fileno()
+ソケットのファイル記述子を短い整数型で返します。失敗時には、-1 を返します。ファイル記述子は、 select.select() などで使用します。
+
+Windowsではこのメソッドで返された小整数をファイル記述子を扱う箇所 (os.fdopen() など) で利用できません。 Unix にはこの制限はありません。
+
+socket.get_inheritable()
+ソケットのファイル記述子またはソケットのハンドルの 継承可能フラグ を取得します。ソケットが子プロセスへ継承可能なら True 、継承不可なら False を返します。
+
+バージョン 3.4 で追加.
+
+socket.getpeername()
+ソケットが接続しているリモートアドレスを返します。この関数は、リモート IPv4/v6ソケットのポート番号を調べる場合などに使用します。 address のフォーマットはアドレスファミリによって異なります(前述)。この関数をサポートしていないシステムも存在します。
+
+socket.getsockname()
+ソケット自身のアドレスを返します。この関数は、IPv4/v6ソケットのポート番号を調べる場合などに使用します。(address のフォーマットはアドレスファミリによって異なります --- 前述。)
+
+socket.getsockopt(level, optname[, buflen])
+ソケットに指定されたオプションを返します(Unixのマニュアルページ getsockopt(2) を参照)。 SO_* 等のシンボルは、このモジュールで定義しています。 buflen を省略した場合、取得するオブションは整数とみなし、整数型の値を戻り値とします。 buflen を指定した場合、長さ buflen のバッファでオプションを受け取り、このバッファをバイト列オブジェクトとして返します。このバッファは、呼び出し元プログラムで struct モジュール等を利用して内容を読み取ることができます。
+
+Availability: not WASI.
+
+socket.getblocking()
+Return True if socket is in blocking mode, False if in non-blocking.
+
+This is equivalent to checking socket.gettimeout() != 0.
+
+バージョン 3.7 で追加.
+
+socket.gettimeout()
+ソケットに指定されたタイムアウト値を取得します。タイムアウト値が設定されている場合には浮動小数点型で秒数が、設定されていなければ None が返ります。この値は、最後に呼び出された setblocking() または settimeout() によって設定されます。
+
+socket.ioctl(control, option)
+プラットフォーム
+Windows
+
+ioctl() メソッドは WSAIoctl システムインターフェースへの制限されたインターフェースです。詳しい情報については、 Win32 documentation を参照してください。
+
+他のプラットフォームでは一般的な fcntl.fcntl() と fcntl.ioctl() が使われるでしょう; これらの関数は第 1 引数としてソケットオブジェクトを取ります。
+
+現在、以下のコントロールコードのみがサポートされています。 SIO_RCVALL, SIO_KEEPALIVE_VALS, SIO_LOOPBACK_FAST_PATH。
+
+バージョン 3.6 で変更: SIO_LOOPBACK_FAST_PATH が追加されました。
+
+socket.listen([backlog])
+サーバーを有効にして、接続を受け付けるようにします。backlog が指定されている場合、少なくとも 0 以上でなければなりません (それより低い場合、0 に設定されます)。システムが新しい接続を拒否するまでに許可する未受付の接続の数を指定します。指定しない場合、デフォルトの妥当な値が選択されます。
+
+Availability: not WASI.
+
+バージョン 3.5 で変更: backlog 引数が任意になりました。
+
+socket.makefile(mode='r', buffering=None, *, encoding=None, errors=None, newline=None)
+ソケットに関連付けられた ファイルオブジェクト を返します。戻り値の正確な型は、 makefile() に指定した引数によります。これらの引数は、組み込み関数 open() の引数と同様に解釈されます。ただし、mode の値は 'r' (デフォルト), 'w', 'b' のみがサポートされています。
+
+ソケットはブロッキングモードでなければなりません。タイムアウトを設定することはできますが、タイムアウトが発生すると、ファイルオブジェクトの内部バッファが矛盾した状態になることがあります。
+
+makefile() でファイルオブジェクトにソケットを関連づけた場合、ソケットを閉じるには、関連づけられたすべてのファイルオブジェクトを閉じたあとで、元のソケットの socket.close() を呼び出さなければなりません。
+
+注釈 Windows では subprocess.Popen() の stream 引数などファイルディスクリプタつき file オブジェクトが期待されている場所では、 makefile() によって作成される file-like オブジェクトは使用できません。
+socket.recv(bufsize[, flags])
+ソケットからデータを受信し、結果を bytes オブジェクトで返します。一度に受信するデータは、最大でも bufsize で指定した量です。オプション引数 flags に指定するフラグの意味については、 Unix のマニュアルページ recv(2) を参照してください。 flags のデフォルトは 0 です。
+
+注釈 ハードウェアおよびネットワークの現実に最大限マッチするように、 bufsize の値は比較的小さい2の累乗、たとえば 4096、にすべきです。
+バージョン 3.5 で変更: システムコールが中断されシグナルハンドラが例外を送出しなかった場合、このメソッドは InterruptedError 例外を送出する代わりにシステムコールを再試行するようになりました (論拠については PEP 475 を参照してください)。
+
+socket.recvfrom(bufsize[, flags])
+ソケットからデータを受信し、結果をタプル (bytes, address) として返します。 bytes は受信データの bytes オブジェクトで、 address は送信元のアドレスを示します。オプション引数 flags については、 Unix のマニュアルページ recv(2) を参照してください。デフォルトは0です。 (address のフォーマットはアドレスファミリによって異なります(前述))
+
+バージョン 3.5 で変更: システムコールが中断されシグナルハンドラが例外を送出しなかった場合、このメソッドは InterruptedError 例外を送出する代わりにシステムコールを再試行するようになりました (論拠については PEP 475 を参照してください)。
+
+バージョン 3.7 で変更: For multicast IPv6 address, first item of address does not contain %scope_id part anymore. In order to get full IPv6 address use getnameinfo().
+
+socket.recvmsg(bufsize[, ancbufsize[, flags]])
+ソケットから通常のデータ (最大 bufsize バイト) と補助的なデータを受信します。ancbufsize 引数により、補助的なデータの受信に使用される内部バッファのバイト数として、サイズが設定されます。このデフォルトは 0 で、補助的なデータを受信しないことを意味します。CMSG_SPACE() または CMSG_LEN() を使用して、補助的なデータの適切なサイズを計算することができ、バッファ内に収まらないアイテムは、短縮されるか破棄されます。flags 引数はデフォルトでは 0 で、recv() での意味と同じ意味を持ちます。
+
+戻り値は 4 要素のタプル (data, ancdata, msg_flags, address) です。data アイテムは、受信した非付属的データを保持する bytes オブジェクトです。ancdata アイテムは、ゼロ以上のタプル (cmsg_level, cmsg_type, cmsg_data) からなるリストで、受信する付属的なデータ (制御メッセージ) を表します。cmsg_level と cmsg_type はそれぞれ、プロトコルレベルとプロトコル固有のタイプを指定する整数で、cmsg_data は関連するデータを保持する bytes オブジェクトです。msg_flags アイテムは、受信したメッセージの条件を示す様々なフラグのビット OR です。詳細は、システムのドキュメントを参照してください。受信ソケットが接続されていない場合、address は、送信ソケットが利用できる場合にはそのアドレスで、利用できない場合、その値は未指定になります。
+
+一部のシステムでは、sendmsg() と recvmsg() を使用して、プロセス間で AF_UNIX ソケットを経由してファイル記述子を渡すことができます。この機能を使用する場合 (しばしば SOCK_STREAM ソケットに限定されます)、recvmsg() は、付属的なデータ中に、(socket.SOL_SOCKET, socket.SCM_RIGHTS, fds) という形式のアイテムを返します。ここで、fds は、新しいファイル記述子をネイティブ C の int 型のバイナリ配列として表す bytes オブジェクトです。システムコールが返った後 recvmsg() が例外を送出する場合、まずこのメカニズムを経由して受信したファイル記述子を全て閉じようと試みます。
+
+一部のシステムでは、部分的に受信した付属的なデータアイテムの短縮された長さが示されません。アイテムがバッファの末尾を超えているようである場合、recvmsg() は RuntimeWarning を送出し、関連するデータの開始位置より前で途切れていない場合、バッファ内の付属的なデータの一部を返します。
+
+SCM_RIGHTS メカニズムをサポートするシステム上では、次の関数が最大 maxfds のファイル記述子を受信し、メッセージデータと記述子を含むリストを返しま(無関係な制御メッセージを受信した場合など、予期しない条件は無視します)。 sendmsg() も参照してください。
+
+import socket, array
+
+def recv_fds(sock, msglen, maxfds):
+    fds = array.array("i")   # Array of ints
+    msg, ancdata, flags, addr = sock.recvmsg(msglen, socket.CMSG_LEN(maxfds * fds.itemsize))
+    for cmsg_level, cmsg_type, cmsg_data in ancdata:
+        if cmsg_level == socket.SOL_SOCKET and cmsg_type == socket.SCM_RIGHTS:
+            # Append data, ignoring any truncated integers at the end.
+            fds.frombytes(cmsg_data[:len(cmsg_data) - (len(cmsg_data) % fds.itemsize)])
+    return msg, list(fds)
+利用可能な環境: Unix。
+
+Unix プラットフォーム。
+
+バージョン 3.3 で追加.
+
+バージョン 3.5 で変更: システムコールが中断されシグナルハンドラが例外を送出しなかった場合、このメソッドは InterruptedError 例外を送出する代わりにシステムコールを再試行するようになりました (論拠については PEP 475 を参照してください)。
+
+socket.recvmsg_into(buffers[, ancbufsize[, flags]])
+recvmsg() と同様に動作してソケットから通常のデータと付属的なデータを受信しますが、非付属的データは新しいバイトオブジェクトとして返すのではなく、一連のバッファとして返します。buffers 引数は書き込み可能なバッファをエクスポートするオブジェクトのイテラブルでなければなりません (例: bytearray オブジェクト)。これらは、全てに書き込まれるか、残りバッファがなくなるまで、非付属的データの連続チャンクで埋められます。オペレーティングシステムによって、使用できるバッファの数が制限 (sysconf() 値 SC_IOV_MAX) されている場合があります。ancbufsize 引数と flags 引数は、recvmsg() での意味と同じ意味を持ちます。
+
+戻り値は 4 要素のタプル (nbytes, ancdata, msg_flags, address) です。ここで、nbytes はバッファに書き込まれた非付属的データの総数で、ancdata、msg_flags、address は recvmsg() と同様です。
+
+以下はプログラム例です:
+
+>>>
+import socket
+s1, s2 = socket.socketpair()
+b1 = bytearray(b'----')
+b2 = bytearray(b'0123456789')
+b3 = bytearray(b'--------------')
+s1.send(b'Mary had a little lamb')
+22
+s2.recvmsg_into([b1, memoryview(b2)[2:9], b3])
+(22, [], 0, None)
+[b1, b2, b3]
+[bytearray(b'Mary'), bytearray(b'01 had a 9'), bytearray(b'little lamb---')]
+利用可能な環境: Unix。
+
+Unix プラットフォーム。
+
+バージョン 3.3 で追加.
+
+socket.recvfrom_into(buffer[, nbytes[, flags]])
+ソケットからデータを受信し、そのデータを新しいバイト文字列として返す代わりに buffer に書きます。戻り値は (nbytes, address) のペアで、 nbytes は受信したデータのバイト数を、 address はデータを送信したソケットのアドレスです。オプション引数 flags (デフォルト:0) の意味については、 Unix マニュアルページ recv(2) を参照してください。(address のフォーマットは前述のとおりアドレスファミリーに依存します。)
+
+socket.recv_into(buffer[, nbytes[, flags]])
+nbytes バイトまでのデータをソケットから受信して、そのデータを新しいバイト文字列にするのではなく buffer に保存します。 nbytes が指定されない(あるいは0が指定された)場合、 buffer の利用可能なサイズまで受信します。受信したバイト数を返り値として返します。オプション引数 flags (デフォルト:0) の意味については、 Unix マニュアルページ recv(2) を参照してください。
+
+socket.send(bytes[, flags])
+ソケットにデータを送信します。ソケットはリモートソケットに接続済みでなければなりません。オプション引数 flags の意味は、上記 recv() と同じです。戻り値として、送信したバイト数を返します。アプリケーションでは、必ず戻り値をチェックし、全てのデータが送られた事を確認する必要があります。データの一部だけが送信された場合、アプリケーションで残りのデータを再送信してください。 ソケットプログラミングHOWTO に、さらに詳しい情報があります。
+
+バージョン 3.5 で変更: システムコールが中断されシグナルハンドラが例外を送出しなかった場合、このメソッドは InterruptedError 例外を送出する代わりにシステムコールを再試行するようになりました (論拠については PEP 475 を参照してください)。
+
+socket.sendall(bytes[, flags])
+ソケットにデータを送信します。ソケットはリモートソケットに接続済みでなければなりません。オプション引数 flags の意味は、上記 recv() と同じです。 send() と異なり、このメソッドは bytes の全データを送信するか、エラーが発生するまで処理を継続します。正常終了の場合は None を返し、エラー発生時には例外が発生します。エラー発生時、送信されたバイト数を調べる事はできません。
+
+バージョン 3.5 で変更: ソケットのタイムアウトは、データが正常に送信される度にリセットされなくなりました。ソケットのタイムアウトは、すべてのデータを送る最大の合計時間となります。
+
+バージョン 3.5 で変更: システムコールが中断されシグナルハンドラが例外を送出しなかった場合、このメソッドは InterruptedError 例外を送出する代わりにシステムコールを再試行するようになりました (論拠については PEP 475 を参照してください)。
+
+socket.sendto(bytes, address)
+socket.sendto(bytes, flags, address)
+ソケットにデータを送信します。このメソッドでは接続先を address で指定するので、接続済みではいけません。オプション引数 flags の意味は、上記 recv() と同じです。戻り値として、送信したバイト数を返します。(address のフォーマットはアドレスファミリによって異なります --- 前述。)
+
+引数 self, address を指定して 監査イベント socket.sendto を送出します。
+
+バージョン 3.5 で変更: システムコールが中断されシグナルハンドラが例外を送出しなかった場合、このメソッドは InterruptedError 例外を送出する代わりにシステムコールを再試行するようになりました (論拠については PEP 475 を参照してください)。
+
+socket.sendmsg(buffers[, ancdata[, flags[, address]]])
+非付属的なデータを一連のバッファから集め、単一のメッセージにまとめることで、通常のデータと付属的なデータをソケットに送信します。buffers 引数は、非付属的なデータを bytes-like objects (例: bytes オブジェクト) のイテラブルとして指定します。オペレーティングシステムによって、使用できるバッファの数が制限 (sysconf() 値 SC_IOV_MAX) されている場合があります。ancdata 引数は付属的なデータ (制御メッセージ) をゼロ以上のタプル (cmsg_level, cmsg_type, cmsg_data) のイテラブルとして指定します。ここで、cmsg_level と cmsg_type はそれぞれプロトコルレベルとプロトコル固有のタイプを指定する整数で、cmsg_data は関連データを保持するバイトライクオブジェクトです。一部のシステム (特に CMSG_SPACE() を持たないシステム) では、一度の呼び出しで一つの制御メッセージの送信しかサポートされていない場合があります。flags 引数のデフォルトは 0 であり、send() での意味と同じ意味を持ちます。None 以外の address が渡された場合、メッセージの目的地のアドレスを設定します。戻り値は、送信された非付属的データのバイト数です。
+
+以下の関数は、SCM_RIGHTS メカニズムをサポートするシステムで、ファイル記述子 fds を AF_UNIX ソケット経由で送信します。recvmsg() も参照してください。
+
+import socket, array
+
+def send_fds(sock, msg, fds):
+    return sock.sendmsg([msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))])
+Availability: Unix, not WASI.
+
+Unix プラットフォーム。
+
+引数 self, address を指定して 監査イベント socket.sendmsg を送出します。
+
+バージョン 3.3 で追加.
+
+バージョン 3.5 で変更: システムコールが中断されシグナルハンドラが例外を送出しなかった場合、このメソッドは InterruptedError 例外を送出する代わりにシステムコールを再試行するようになりました (論拠については PEP 475 を参照してください)。
+
+socket.sendmsg_afalg([msg, ]*, op[, iv[, assoclen[, flags]]])
+sendmsg() の AF_ALG ソケット用に特化したバージョンです。AF_ALG ソケットの、モード、IV、AEAD に関連づけられたデータ長、フラグを設定します。
+
+利用可能な環境: Linux 2.6.38以上。
+
+バージョン 3.6 で追加.
+
+socket.sendfile(file, offset=0, count=None)
+高性能の os.sendfile を使用して、ファイルを EOF まで送信し、送信されたバイトの総数を返します。file は、バイナリモードで開かれた標準的なファイルオブジェクトです。os.sendfile が使用できない場合 (例: Windows)、または file が標準的なファイルでない場合、代わりに send() が使用されます。offset は、ファイルの読み出し開始位置を指定します。count が指定されている場合、ファイルを EOF まで送信するのではなく、転送するバイトの総数を指定します。ファイルの位置は、返る時に更新されます。あるいは、エラー時には file.tell()  を使用して送信されたバイトの数を確認することができます。ソケットは SOCK_STREAM タイプでなければなりません。非ブロックソケットはサポートされていません。
+
+バージョン 3.5 で追加.
+
+socket.set_inheritable(inheritable)
+ソケットのファイル記述子、またはソケットのハンドルの、 継承可能フラグ を立てます。
+
+バージョン 3.4 で追加.
+
+socket.setblocking(flag)
+ソケットをブロッキングモード、または非ブロッキングモードに設定します。flag が False の場合にはソケットは非ブロッキングモードになり、True の場合にはブロッキングモードになります。
+
+このメソッドは、次の settimeout() 呼び出しの省略表記です:
+
+sock.setblocking(True) は sock.settimeout(None) と等価です
+
+sock.setblocking(False) は sock.settimeout(0.0) と等価です
+
+バージョン 3.7 で変更: The method no longer applies SOCK_NONBLOCK flag on socket.type.
+
+socket.settimeout(value)
+ブロッキングソケットの処理のタイムアウト値を指定します。 value には float 型で非負の秒数を指定するか、 None を指定します。ゼロ以外の値を指定した場合、ソケットの処理が完了する前に value で指定した秒数が経過すれば timeout 例外を送出します。ゼロを指定した場合、ソケットは非ブロッキングモード状態に置かれます。 None を指定した場合、ソケットのタイムアウトを無効にします。
+
+詳しくは ソケットタイムアウトの注意事項 を参照してください。
+
+バージョン 3.7 で変更: The method no longer toggles SOCK_NONBLOCK flag on socket.type.
+
+socket.setsockopt(level, optname, value: int)
+socket.setsockopt(level, optname, value: buffer)
+socket.setsockopt(level, optname, None, optlen: int)
+指定されたソケットオプションの値を設定します (Unix のマニュアルページ setsockopt(2) を参照)。必要なシンボリック定数は、socket モジュール (SO_* など) で定義されています。この値は、整数、None、またはバッファを表す bytes-like object のいずれかです。バイトライクオブジェクトの場合、バイト文字列に適切なビットが含まれていることを確認するのは呼び出し元の仕事です (C 構造をバイト文字列としてエンコードする方法については、オプションの組み込みモジュール struct を参照)。値が None に設定されている場合、optlen 引数が必須です。これは、 optval=NULL と optlen=optlen で setsockopt() C 関数を呼び出すのと同一です。
+
+バージョン 3.5 で変更: 書き込み可能な bytes-like object を使用できるようになりました。
+
+バージョン 3.6 で変更: setsockopt(level, optname, None, optlen: int) の形式が追加されました。
+
+Availability: not WASI.
+
+socket.shutdown(how)
+接続の片方向、または両方向を切断します。 how が SHUT_RD の場合、以降は受信を行えません。 how が SHUT_WR の場合、以降は送信を行えません。 how が SHUT_RDWR の場合、以降は送受信を行えません。
+
+Availability: not WASI.
+
+socket.share(process_id)
+ソケットを複製し、対象のプロセスと共有するための bytes オブジェクトを返します。対象のプロセスを process_id で指定しなければなりません。戻り値の bytes オブジェクトは、何らかのプロセス間通信を使って対象のプロセスに伝えます。対象のプロセス側では、 fromshare() を使って複製されたソケットをとらえます。オペレーティング・システムは対象のプロセスに対してソケットを複製するため、このメソッドを呼び出した後であれば、元のソケットをクローズしても、対象のプロセスに渡ったソケットには影響がありません。
+
+利用可能な環境: Windows 。
+
+バージョン 3.3 で追加.
+
+read() メソッドと write() メソッドは存在しませんので注意してください。代わりに flags を省略した recv() と send() を使うことができます。
+
+ソケットオブジェクトには以下の socket コンストラクタに渡された値に対応した (読み出し専用) 属性があります。
+
+socket.family
+ソケットファミリー。
+
+socket.type
+ソケットタイプ。
+
+socket.proto
+ソケットプロトコル。
+
+ソケットタイムアウトの注意事項
+ソケットオブジェクトは、ブロッキングモード、非ブロッキングモード、タイムアウトモードのうち、いずれか1つのモードをとります。デフォルトでは、ソケットは常にブロッキングモードで作成されますが、 setdefaulttimeout() で標準のモードを変更することができます。
+
+ブロッキングモード での操作は、完了するか、または（接続がタイムアウトするなどして）システムがエラーを返すまで、ブロックされます。
+
+非ブロッキングモード での操作は、ただちに完了できない場合、例外を送出して失敗します。この場合の例外の種類は、システムに依存するため、ここに記すことができません。 select モジュールの関数を使って、ソケットの読み書きが利用可能かどうか、可能な場合はいつ利用できるかを調べることができます。
+
+タイムアウトモード での操作は、指定されたタイムアウトの時間内に完了しなければ、 timeout 例外を送出します。タイムアウトの時間内にシステムがエラーを返した場合は、そのエラーを返します。
+
+注釈 オペレーティング・システムのレベルでは、 タイムアウトモード のソケットには、内部的に非ブロッキングモードが設定されています。またブロッキングモードとタイムアウトモードの指定は、ファイル記述子と、「そのファイル記述子と同じネットワーク端点を参照するソケットオブジェクト」との間で共有されます。このことは、例えばソケットの fileno() を使うことにした場合に、明らかな影響を与えます。
+タイムアウトと connect メソッド
+connect() もタイムアウト設定に従います。一般的に、 settimeout() を connect() の前に呼ぶか、 create_connection() にタイムアウト引数を渡すことが推奨されます。ただし、システムのネットワークスタックが Python のソケットタイムアウトの設定を無視して、自身の接続タイムアウトエラーを返すこともあります。
+
+タイムアウトと accept メソッド
+getdefaulttimeout() が None でない場合、 accept() メソッドが返すソケットでは、そのタイムアウトが継承されます。 None である場合、待機中のソケットの設定によって動作は異なります。
+
+待機中のソケットが ブロッキングモード または タイムアウトモード である場合、accept() が返すソケットは、ブロッキングモード になります。
+
+待機中のソケットが 非ブロッキングモード である場合、accept() が返すソケットは、オペレーティングシステムによってブロッキングモードまたは非ブロッキングモードになります。クロスプラットフォームの動作を確保したい場合、この設定を手動でオーバーライドすることをお勧めします。
+
+使用例
+以下は TCP/IP プロトコルの簡単なサンプルとして、受信したデータをクライアントにそのまま返送するサーバ (接続可能なクライアントは一件のみ) と、サーバに接続するクライアントの例を示します。サーバでは、 socket() ・ bind() ・ listen() ・ accept() を実行し (複数のクライアントからの接続を受け付ける場合、 accept() を複数回呼び出します)、クライアントでは socket() と connect() だけを呼び出しています。サーバでは sendall() / recv() メソッドは listen 中のソケットで実行するのではなく、 accept() で取得したソケットに対して実行している点にも注意してください。
+
+次のクライアントとサーバは、IPv4 のみをサポートしています。
+
+# Echo server program
+import socket
+
+HOST = ''                 # Symbolic name meaning all available interfaces
+PORT = 50007              # Arbitrary non-privileged port
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind((HOST, PORT))
+    s.listen(1)
+    conn, addr = s.accept()
+    with conn:
+        print('Connected by', addr)
+        while True:
+            data = conn.recv(1024)
+            if not data: break
+            conn.sendall(data)
+# Echo client program
+import socket
+
+HOST = 'daring.cwi.nl'    # The remote host
+PORT = 50007              # The same port as used by the server
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.connect((HOST, PORT))
+    s.sendall(b'Hello, world')
+    data = s.recv(1024)
+print('Received', repr(data))
+The next two examples are identical to the above two, but support both IPv4 and IPv6. The server side will listen to the first address family available (it should listen to both instead). On most of IPv6-ready systems, IPv6 will take precedence and the server may not accept IPv4 traffic. The client side will try to connect to all the addresses returned as a result of the name resolution, and sends traffic to the first one connected successfully.
+
+# Echo server program
+import socket
+import sys
+
+HOST = None               # Symbolic name meaning all available interfaces
+PORT = 50007              # Arbitrary non-privileged port
+s = None
+for res in socket.getaddrinfo(HOST, PORT, socket.AF_UNSPEC,
+                              socket.SOCK_STREAM, 0, socket.AI_PASSIVE):
+    af, socktype, proto, canonname, sa = res
+    try:
+        s = socket.socket(af, socktype, proto)
+    except OSError as msg:
+        s = None
+        continue
+    try:
+        s.bind(sa)
+        s.listen(1)
+    except OSError as msg:
+        s.close()
+        s = None
+        continue
+    break
+if s is None:
+    print('could not open socket')
+    sys.exit(1)
+conn, addr = s.accept()
+with conn:
+    print('Connected by', addr)
+    while True:
+        data = conn.recv(1024)
+        if not data: break
+        conn.send(data)
+# Echo client program
+import socket
+import sys
+
+HOST = 'daring.cwi.nl'    # The remote host
+PORT = 50007              # The same port as used by the server
+s = None
+for res in socket.getaddrinfo(HOST, PORT, socket.AF_UNSPEC, socket.SOCK_STREAM):
+    af, socktype, proto, canonname, sa = res
+    try:
+        s = socket.socket(af, socktype, proto)
+    except OSError as msg:
+        s = None
+        continue
+    try:
+        s.connect(sa)
+    except OSError as msg:
+        s.close()
+        s = None
+        continue
+    break
+if s is None:
+    print('could not open socket')
+    sys.exit(1)
+with s:
+    s.sendall(b'Hello, world')
+    data = s.recv(1024)
+print('Received', repr(data))
+次の例は、Windowsで raw socket を利用して非常にシンプルなネットワークスニファーを書きます。このサンプルを実行するには、インターフェースを操作するための管理者権限が必要です:
+
+import socket
+
+# the public network interface
+HOST = socket.gethostbyname(socket.gethostname())
+
+# create a raw socket and bind it to the public interface
+s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_IP)
+s.bind((HOST, 0))
+
+# Include IP headers
+s.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
+
+# receive all packets
+s.ioctl(socket.SIO_RCVALL, socket.RCVALL_ON)
+
+# receive a packet
+print(s.recvfrom(65565))
+
+# disabled promiscuous mode
+s.ioctl(socket.SIO_RCVALL, socket.RCVALL_OFF)
+次の例では、ソケットインターフェースを使用してローソケットプロトコルを使用する CAN ネットワークと通信する方法を説明します。ブロードキャストマネージャプロトコロルで CAN を使用するには、以下でソケットを開きます。
+
+socket.socket(socket.AF_CAN, socket.SOCK_DGRAM, socket.CAN_BCM)
+ソケットの束縛 (CAN_RAW) または (CAN_BCM) 接続を行ったあと、ソケットオブジェクトで socket.send() と socket.recv() 操作 (とそのカウンターパート) を通常通りに使用することができます。
+
+最後の例では、特権が必要になるかもしれません:
+
+import socket
+import struct
+
+
+# CAN frame packing/unpacking (see 'struct can_frame' in <linux/can.h>)
+
+can_frame_fmt = "=IB3x8s"
+can_frame_size = struct.calcsize(can_frame_fmt)
+
+def build_can_frame(can_id, data):
+    can_dlc = len(data)
+    data = data.ljust(8, b'\x00')
+    return struct.pack(can_frame_fmt, can_id, can_dlc, data)
+
+def dissect_can_frame(frame):
+    can_id, can_dlc, data = struct.unpack(can_frame_fmt, frame)
+    return (can_id, can_dlc, data[:can_dlc])
+
+
+# create a raw socket and bind it to the 'vcan0' interface
+s = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+s.bind(('vcan0',))
+
+while True:
+    cf, addr = s.recvfrom(can_frame_size)
+
+    print('Received: can_id=%x, can_dlc=%x, data=%s' % dissect_can_frame(cf))
+
+    try:
+        s.send(cf)
+    except OSError:
+        print('Error sending CAN frame')
+
+    try:
+        s.send(build_can_frame(0x01, b'\x01\x02\x03'))
+    except OSError:
+        print('Error sending CAN frame')
+この例を、ほとんど間を空けずに複数回実行すると、以下のエラーが発生する場合があります:
+
+OSError: [Errno 98] Address already in use
+これは以前の実行がソケットを TIME_WAIT 状態のままにし、すぐには再利用できないことで起こります。
+
+There is a socket flag to set, in order to prevent this, socket.SO_REUSEADDR:
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((HOST, PORT))
+SO_REUSEADDR フラグは、 TIME_WAIT 状態にあるローカルソケットをそのタイムアウト期限が自然に切れるのを待つことなく再利用することをカーネルに伝えます。

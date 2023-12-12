@@ -3,9 +3,9 @@ import os
 from EdgeGPT.EdgeGPT import Chatbot, ConversationStyle
 
 async def main():
-    bot = await Chatbot.create()
+    bot = Chatbot(cookiePath ='cookies.json')
     print(await bot.ask(
-        prompt="大阪府の人口について教えてください。", 
+        prompt="Hello World!", 
         conversation_style=ConversationStyle.creative)
         )
     await bot.close()

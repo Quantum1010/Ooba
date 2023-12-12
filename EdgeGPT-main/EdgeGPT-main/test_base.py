@@ -13,8 +13,8 @@ from os import getenv
 async def test_ask() -> None:
     bot = await Chatbot.create(cookies=getenv("EDGE_COOKIES"))
     response = await bot.ask(
-        prompt="東京都の人口を教えてください",
-        conversation_style=ConversationStyle.creative,
+        prompt="find me some information about the new ai released by meta.",
+        conversation_style=ConversationStyle.balanced,
         simplify_response=True,
     )
     await bot.close()
